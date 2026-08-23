@@ -1,0 +1,32 @@
+<?xml version="1.1" ?>
+<settings>
+    <!--
+        Vanish settings.
+
+        Settings/Defaults.xml is the starting point for new characters. The
+        first time a character logs in it is copied to
+        Settings/<Name>_settings.xml, and that copy is what the character uses
+        from then on.
+        keybind is the key that cycles Vanish and Vanishga. Leave it empty
+        for no keybind at all.
+
+        Keybind Notes:
+
+        Modifiers:  ^ Ctrl   ! Alt   ~ Shift   @ Windows   # Apps (menu key)
+
+        Keys: a to z, 0 to 9, f1 to f12, numpad0 to numpad9, numpad+,
+        numpad-, numpad*, numpad/, numpad., numpadenter, space, tab, enter,
+        backspace, escape, insert, delete, home, end, pageup, pagedown,
+        up, down, left, right
+
+        Examples:  !space is Alt + Spacebar.  ^v is Ctrl + V.
+        ~f12 is Shift + F12.  f9 is F9 on its own.
+        ^!numpad0 is Ctrl + Alt + Numpad 0.
+    -->
+    <global>
+        <blacklist></blacklist> <!-- Hidden in Vanish mode. Comma separated: alice,bob -->
+        <keybind></keybind>     <!-- Cycles the modes. See the notes above. -->
+        <mode>vanish</mode>     <!-- vanish or vanishga -->
+        <whitelist></whitelist> <!-- Drawn in Vanishga mode, with your party and alliance. -->
+    </global>
+</settings>

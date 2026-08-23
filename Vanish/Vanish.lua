@@ -29,25 +29,32 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 _addon.name = 'Vanish'
 _addon.author = 'Broguypal'
-_addon.version = '2.0.1'
+_addon.version = '2.1.0'
 _addon.commands = {'vanish', 'van'}
 
 require('logger')
 require('strings')
 
 local config = require('config')
+local files = require('files')
 
 local addon_path = windower.addon_path:gsub('\\', '/')
-package.cpath = package.cpath .. ';' .. addon_path .. '/libs/?.dll'
+if addon_path:sub(-1) ~= '/' then addon_path = addon_path .. '/' end
+
+package.cpath = package.cpath .. ';' .. addon_path .. 'libs/?.dll'
 
 local loaded, load_error = pcall(require, '_Vanish')
 
-local settings = config.load({
+local DEFAULTS = {
     mode      = 'vanish',
     blacklist = '',
     whitelist = '',
     keybind   = '',
-})
+}
+
+local SETTINGS_DIR = 'Settings/'
+local DEFAULTS_PATH = SETTINGS_DIR .. 'Defaults.xml'
+local LEGACY_PATH = 'data/settings.xml'
 
 local MODE_ID = {vanish = 1, vanishga = 2}
 local CYCLE = {vanish = 'vanishga', vanishga = 'vanish'}
@@ -57,10 +64,17 @@ local blacklist = {}
 local whitelist = {}
 local mode = 'vanish'
 local keybind = ''
+local character = nil
+local settings = nil
+local settings_file = nil
 local last_refresh = 0
 
 local function available()
     return loaded and _Vanish ~= nil
+end
+
+local function attached()
+    return settings ~= nil
 end
 
 local function titlecase(name)
@@ -93,6 +107,53 @@ local function list_for(which)
     if mode == 'vanish' then return blacklist, 'blacklist', 'vanish' end
     return whitelist, 'whitelist', 'vanishga'
 end
+
+local function pair_empty_tags()
+    if not settings_file or not settings_file:exists() then return end
+
+    local content = settings_file:read()
+    if type(content) ~= 'string' then return end
+
+    local lines = {}
+    local width = 0
+
+    for line in (content .. '\n'):gmatch('(.-)\n') do
+        line = line:gsub('<(%a[%w_]*)%s*/>', '<%1></%1>'):gsub('%s+$', '')
+        lines[#lines + 1] = line
+
+        local element = line:match('^%s*(<[^!].-)%s+<!%-%-')
+        if element and #element > width then
+            width = #element
+        end
+    end
+
+    for index, line in ipairs(lines) do
+        local indent, element, comment = line:match('^(%s*)(<[^!].-)%s+(<!%-%-.*)$')
+        if element then
+            lines[index] = indent .. element
+                .. (' '):rep(width - #element + 1) .. comment
+        end
+    end
+
+    local tidied = table.concat(lines, '\n')
+    if tidied ~= content then
+        settings_file:write(tidied)
+    end
+end
+
+local function persist()
+    if not attached() then return end
+
+    settings.mode = mode
+    settings.blacklist = table.concat(sorted(blacklist), ',')
+    settings.whitelist = table.concat(sorted(whitelist), ',')
+    settings.keybind = keybind
+
+    config.save(settings, 'all')
+    pair_empty_tags()
+end
+
+-- Native module -------------------------------------------------------------
 
 local function push_policy()
     if not available() then return end
@@ -130,12 +191,7 @@ local function push_exempt()
     _Vanish.exempt(table.concat(indices, ','), self_index)
 end
 
-local function persist()
-    settings.mode = mode
-    settings.blacklist = table.concat(sorted(blacklist), ',')
-    settings.whitelist = table.concat(sorted(whitelist), ',')
-    config.save(settings, 'all')
-end
+-- Character sessions --------------------------------------------------------
 
 local function describe_mode()
     if mode == 'vanish' then
@@ -144,6 +200,136 @@ local function describe_mode()
 
     return 'Vanishga mode: only the whitelist, your party and your alliance are drawn.'
 end
+
+local function bind_key()
+    if keybind ~= '' then
+        windower.send_command('bind ' .. keybind .. ' vanish cycle')
+    end
+end
+
+local function unbind_key()
+    if keybind ~= '' then
+        windower.send_command('unbind ' .. keybind)
+    end
+end
+
+local function apply(source)
+    blacklist = parse_list(source.blacklist)
+    whitelist = parse_list(source.whitelist)
+
+    mode = tostring(source.mode or 'vanish'):lower()
+    if not MODE_ID[mode] then mode = 'vanish' end
+
+    keybind = type(source.keybind) == 'string' and source.keybind:trim() or ''
+end
+
+local DEFAULT_SETTINGS = table.concat({
+    '<?xml version="1.1" ?>',
+    '<settings>',
+    '    <!--',
+    '        Vanish settings.',
+    '',
+    '        Settings/Defaults.xml is the starting point for new characters. The',
+    '        first time a character logs in it is copied to',
+    '        Settings/<Name>_settings.xml, and that copy is what the character uses',
+    '        from then on.',
+    '        keybind is the key that cycles Vanish and Vanishga. Leave it empty',
+    '        for no keybind at all.',
+    '',
+    '        Keybind Notes:',
+    '',
+    '        Modifiers:  ^ Ctrl   ! Alt   ~ Shift   @ Windows   # Apps (menu key)',
+    '',
+    '        Keys: a to z, 0 to 9, f1 to f12, numpad0 to numpad9, numpad+,',
+    '        numpad-, numpad*, numpad/, numpad., numpadenter, space, tab, enter,',
+    '        backspace, escape, insert, delete, home, end, pageup, pagedown,',
+    '        up, down, left, right',
+    '',
+    '        Examples:  !space is Alt + Spacebar.  ^v is Ctrl + V.',
+    '        ~f12 is Shift + F12.  f9 is F9 on its own.',
+    '        ^!numpad0 is Ctrl + Alt + Numpad 0.',
+    '    -->',
+    '    <global>',
+    '        <blacklist></blacklist> <!-- Hidden in Vanish mode. Comma separated: alice,bob -->',
+    '        <keybind></keybind>     <!-- Cycles the modes. See the notes above. -->',
+    '        <mode>vanish</mode>     <!-- vanish or vanishga -->',
+    '        <whitelist></whitelist> <!-- Drawn in Vanishga mode, with your party and alliance. -->',
+    '    </global>',
+    '</settings>',
+}, '\n') .. '\n'
+
+local function ensure_defaults()
+    local template = files.new(DEFAULTS_PATH)
+
+    if template:exists() then
+        local content = template:read()
+        if type(content) == 'string' and content:trim() ~= '' then
+            return content
+        end
+    end
+
+    template:create()
+    template:write(DEFAULT_SETTINGS)
+
+    return DEFAULT_SETTINGS
+end
+
+local function attach(name)
+    if not available() or name == nil or name == '' then return end
+
+    character = name
+
+    local path = SETTINGS_DIR .. name:gsub('[^%w]', '') .. '_settings.xml'
+    settings_file = files.new(path)
+
+    local defaults = ensure_defaults()
+    local created = not settings_file:exists()
+    local imported = nil
+
+    if created then
+        settings_file:create()
+        settings_file:write(defaults)
+
+        if files.new(LEGACY_PATH):exists() then
+            imported = config.load(LEGACY_PATH, DEFAULTS)
+        end
+    end
+
+    settings = config.load(path, DEFAULTS)
+
+    apply(imported or settings)
+
+    push_policy()
+    push_exempt()
+    bind_key()
+
+    if created then
+        persist()
+
+        if imported then
+            log('Imported the shared settings from Vanish 2.0. ' .. name
+                .. ' now uses ' .. path)
+        end
+    end
+
+    log(name .. ': ' .. describe_mode())
+end
+
+local function detach()
+    unbind_key()
+
+    character = nil
+    settings = nil
+    settings_file = nil
+    keybind = ''
+    blacklist = {}
+    whitelist = {}
+    mode = 'vanish'
+
+    push_policy()
+end
+
+-- Commands ------------------------------------------------------------------
 
 local function set_mode(next_mode)
     mode = next_mode
@@ -234,32 +420,38 @@ local function initialise()
         return
     end
 
-    blacklist = parse_list(settings.blacklist)
-    whitelist = parse_list(settings.whitelist)
+    local status = _Vanish.start()
 
-    mode = tostring(settings.mode or 'vanish'):lower()
-    if not MODE_ID[mode] then mode = 'vanish' end
-
-    log(_Vanish.start())
-
-    push_policy()
-    push_exempt()
-
-    if type(settings.keybind) == 'string' and settings.keybind ~= '' then
-        keybind = settings.keybind
-        windower.send_command('bind ' .. keybind .. ' vanish cycle')
+    if type(status) == 'string' and not status:match('^loaded') then
+        error('The native module did not start: ' .. status)
+        return
     end
 
-    log('Vanish v' .. _addon.version .. ' loaded. ' .. describe_mode())
+    log('Vanish v' .. _addon.version .. ' loaded.')
+
+    local me = windower.ffxi.get_player()
+    if me and me.name then
+        attach(me.name)
+    end
 end
 
 windower.register_event('unload', function()
-    if keybind ~= '' then
-        windower.send_command('unbind ' .. keybind)
-    end
+    unbind_key()
 
     if available() then
         _Vanish.stop()
+    end
+end)
+
+windower.register_event('login', function(name)
+    if available() and not attached() then
+        attach(name)
+    end
+end)
+
+windower.register_event('logout', function()
+    if attached() then
+        detach()
     end
 end)
 
@@ -270,11 +462,17 @@ windower.register_event('prerender', function()
     if now - last_refresh < REFRESH_INTERVAL then return end
     last_refresh = now
 
+    if not attached() then
+        local me = windower.ffxi.get_player()
+        if me and me.name then attach(me.name) end
+        return
+    end
+
     push_exempt()
 end)
 
 windower.register_event('zone change', function()
-    if available() then
+    if available() and attached() then
         push_exempt()
     end
 end)
@@ -282,6 +480,11 @@ end)
 windower.register_event('addon command', function(cmd, ...)
     if not available() then
         error('The native module is not loaded: ' .. tostring(load_error))
+        return
+    end
+
+    if not attached() then
+        error('Log in first. Vanish keeps its settings per character.')
         return
     end
 

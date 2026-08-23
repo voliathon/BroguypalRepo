@@ -14,12 +14,6 @@ Drop the folder in `Windower4/addons/`, then `//lua load vanish`.
 | Vanish | Everyone on the blacklist is hidden |
 | Vanishga | Only the whitelist is drawn |
 
-A keybind can be added after first load in the `data > settings folder` to cycle 
-between modes:
-
-| `<keybind>!space</keybind>` | Makes the keybind alt + spacebar  |
-
-
 ## Commands
 
 `//vanish` or `//van`.
@@ -37,9 +31,12 @@ between modes:
 | `clear` | Empty the active mode's list |
 
 ## Notes
+Your defaults can be changed in the `Settings > Defaults.xml`. By default, 
+cycling between modes is unbound. You'll need to change it here or in your 
+character_settings.xml thats generated on login.
 
-- Mode, both lists and the keybind are saved to `data/settings.xml`, shared
-  across all characters. Change `keybind` there to rebind.
+| `<keybind>!space</keybind>` | Makes the keybind alt + spacebar  |
+
 - No chat filtering. Use `/blist`.
 
 ## License
