@@ -29,7 +29,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 _addon.name = 'Vanish'
 _addon.author = 'Broguypal'
-_addon.version = '2.1.0'
+_addon.version = '2.1.1'
 _addon.commands = {'vanish', 'van'}
 
 require('logger')
@@ -64,7 +64,6 @@ local blacklist = {}
 local whitelist = {}
 local mode = 'vanish'
 local keybind = ''
-local character = nil
 local settings = nil
 local settings_file = nil
 local last_refresh = 0
@@ -108,7 +107,7 @@ local function list_for(which)
     return whitelist, 'whitelist', 'vanishga'
 end
 
-local function pair_empty_tags()
+local function tidy_settings_file()
     if not settings_file or not settings_file:exists() then return end
 
     local content = settings_file:read()
@@ -150,7 +149,7 @@ local function persist()
     settings.keybind = keybind
 
     config.save(settings, 'all')
-    pair_empty_tags()
+    tidy_settings_file()
 end
 
 -- Native module -------------------------------------------------------------
@@ -277,8 +276,6 @@ end
 local function attach(name)
     if not available() or name == nil or name == '' then return end
 
-    character = name
-
     local path = SETTINGS_DIR .. name:gsub('[^%w]', '') .. '_settings.xml'
     settings_file = files.new(path)
 
@@ -318,7 +315,6 @@ end
 local function detach()
     unbind_key()
 
-    character = nil
     settings = nil
     settings_file = nil
     keybind = ''
