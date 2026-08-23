@@ -237,7 +237,7 @@ local DEFAULT_SETTINGS = table.concat({
     '',
     '        Keybind Notes:',
     '',
-    '        Modifiers:  ^ Ctrl   ! Alt   ~ Shift   @ Windows   # Apps (menu key)',
+    '        Modifiers:  ^ Ctrl   ! Alt   ~ Shift',
     '',
     '        Keys: a to z, 0 to 9, f1 to f12, numpad0 to numpad9, numpad+,',
     '        numpad-, numpad*, numpad/, numpad., numpadenter, space, tab, enter,',
