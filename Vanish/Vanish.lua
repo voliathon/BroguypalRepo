@@ -29,7 +29,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 _addon.name = 'Vanish'
 _addon.author = 'Broguypal'
-_addon.version = '2.1.1'
+_addon.version = '2.1.2'
 _addon.commands = {'vanish', 'van'}
 
 require('logger')
@@ -68,12 +68,36 @@ local settings = nil
 local settings_file = nil
 local last_refresh = 0
 
+local started = false
+local start_failed = false
+
 local function available()
     return loaded and _Vanish ~= nil
 end
 
 local function attached()
     return settings ~= nil
+end
+
+local function ensure_started()
+    if started then return true end
+    if start_failed then return false end
+    if not available() then return false end
+
+    local info = windower.ffxi.get_info()
+    if not (info and info.logged_in) then return false end
+
+    local status = _Vanish.start()
+
+    if type(status) == 'string' and not status:match('^loaded') then
+        start_failed = true
+        error('The native module did not start: ' .. status)
+        error('Reload the addon once the game is running: //lua r vanish')
+        return false
+    end
+
+    started = true
+    return true
 end
 
 local function titlecase(name)
@@ -274,6 +298,7 @@ local function ensure_defaults()
 end
 
 local function attach(name)
+    if not ensure_started() then return end
     if not available() or name == nil or name == '' then return end
 
     local path = SETTINGS_DIR .. name:gsub('[^%w]', '') .. '_settings.xml'
@@ -416,13 +441,6 @@ local function initialise()
         return
     end
 
-    local status = _Vanish.start()
-
-    if type(status) == 'string' and not status:match('^loaded') then
-        error('The native module did not start: ' .. status)
-        return
-    end
-
     log('Vanish v' .. _addon.version .. ' loaded.')
 
     local me = windower.ffxi.get_player()
@@ -434,7 +452,7 @@ end
 windower.register_event('unload', function()
     unbind_key()
 
-    if available() then
+    if available() and started then
         _Vanish.stop()
     end
 end)
