@@ -140,11 +140,32 @@ return {
 
     ---------------------------------------------------------------------------
     -- CUSTOM GEARSWAP VARIABLES (ADVANCED USERS)
-    -- Add custom gearswap variables to this list so gear isn't missed during plan
-	-- Only needed if you use variable names in your Lua that the automatic parser can't resolve
-	-- This looks for assignments like: VAR_NAME = "Item Name"
-	-- format: head = {"VAR_NAME","WAR_HEAD","AF_HEAD",...},
-			-- Note: weapon includes MAIN / SUB / RANGED gear
+    --
+    -- Most people never need to touch this. The parser already handles the
+    -- common ways of writing gear, including augments:
+    --
+    --     head = "Item Name"
+    --     head = {name="Item Name", augments={...}}
+    --     my_head = "Item Name"                    -->  head = my_head
+    --     my_head = {name="Item Name", ...}        -->  head = my_head
+    --     gear.fc_head = "Item Name"               -->  head = gear.fc_head
+    --     gear = {fc_head = {name="Item Name",...}}-->  head = gear.fc_head
+    --
+    -- It also picks up definitions like the line below on its own, as long as
+    -- the variable name ENDS in a slot (_head, _body, _hands, _legs, _feet,
+    -- _neck, _waist, _back, _ammo)
+    --
+    -- Add a variable here when the slot is NOT at the end of the name, e.g.
+    -- gear.fc_helm, gear.mnd_vest, gear.cape_run_DA, gear.dark_ring.
+    --
+    -- List the variable name only. Wardrobe9 finds the definition itself and
+    -- reads the augments from it. Names are case-sensitive.
+    --
+    -- format: head = {"AF_helm", "gear.ws_helm", ...},
+    --
+    -- Note: weapon covers MAIN / SUB / RANGED gear. A variable ending in
+    -- _main, _sub, _range or _ranged is treated as a weapon even on armor,
+    -- so list those under their real slot.
     ---------------------------------------------------------------------------
 
 	CUSTOM_GEAR_VARIABLES = {
