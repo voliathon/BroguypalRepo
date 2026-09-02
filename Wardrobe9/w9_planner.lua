@@ -408,8 +408,10 @@ return function(res, util, config, slots, bags, scanmod)
         -- Builds a lookup of variable name -> slot group, then scans
         if type(config.CUSTOM_GEAR_VARIABLES) == 'table' then
             local var_to_group = {}
+            local GROUPS = {}
+            for _, g in pairs(config.SLOT_GROUP or {}) do GROUPS[g] = true end
             for slot, vars in pairs(config.CUSTOM_GEAR_VARIABLES) do
-                local group = util.group_for_slot(slot)
+                local group = util.group_for_slot(slot) or (GROUPS[slot:lower()] and slot:lower())
                 if group and type(vars) == 'table' then
                     for _, varname in ipairs(vars) do
                         if type(varname) == 'string' and varname ~= '' then
