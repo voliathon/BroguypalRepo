@@ -32,7 +32,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 _addon.name    = 'Hivemind'
 _addon.author  = 'Broguypal + Frodobald'
-_addon.version = '1.0.2'
+_addon.version = '1.0.3'
 _addon.command = 'hivemind'
 
 local packets = require('packets')
@@ -55,15 +55,27 @@ local settings = config.load(defaults)
 -- INTERNALS
 ----------------------------------------------------------------------
 local MY_NAME             = nil
-local reply_list          = {}      -- unique {char, sender} for tells
+local reply_list          = {}
 local reply_index         = 0
-local ls_target_list      = {}      -- unique {char, mode} for linkshells (activity-based priority)
+local ls_target_list      = {}
 local ls_reply_index      = 0
-local recent_ls_msgs      = {}      -- deduplication {hash = timestamp}
-local pending_ls_relays   = {}      -- queued LS relays awaiting dedup check
+local seen_ls             = {}
+local pending_ls          = {}
 local last_heartbeat      = 0
-local online_chars        = {}      -- { [char_name] = last_seen_timestamp }
+local online_chars        = {}
 local heartbeat_reply_pending = false
+local active              = false
+local input_text          = nil
+local input_scheduled     = false
+
+local RELAY_DELAY    = .75
+local DEDUP_WINDOW   = 3
+local SEEN_TTL       = 10
+local PRUNE_INTERVAL = 15
+
+local MODE_TELL = 3
+local MODE_LS1  = 5
+local MODE_LS2  = 27
 
 local COLORS = { tell=4, ls1=6, ls2=213, info=167 }
 
@@ -111,12 +123,10 @@ local function get_online_ls_chars()
     local chars = {}
     local seen = {}
 
-    -- Current character first
     table.insert(chars, { char = MY_NAME, mode = 'ls1' })
     table.insert(chars, { char = MY_NAME, mode = 'ls2' })
     seen[MY_NAME] = true
 
-    -- Other online characters
     for name, _ in pairs(online_chars) do
         if not seen[name] then
             seen[name] = true
@@ -159,67 +169,84 @@ local function push_ls_target(char_name, mode)
 end
 
 ----------------------------------------------------------------------
+-- DEDUPLICATION
+----------------------------------------------------------------------
+local function ls_hash(mode, other_player, message)
+    return mode .. '|' .. other_player .. '|' .. message
+end
+
+local function ls_seen_recently(hash)
+    local ts = seen_ls[hash]
+    return ts and (os.clock() - ts) < DEDUP_WINDOW
+end
+
+local function mark_ls_seen(hash)
+    seen_ls[hash] = os.clock()
+end
+
+----------------------------------------------------------------------
 -- DISPLAY & REPLIES
 ----------------------------------------------------------------------
-local function show_relayed_message(sender_char, mode, other_player, message)
+local function relay_ls(entry)
+    pending_ls[entry.hash] = nil
+    if not active or not MY_NAME then return end
+    if ls_seen_recently(entry.hash) then return end
+    mark_ls_seen(entry.hash)
+
     local display, color
-    local hash = mode .. '|' .. other_player .. '|' .. message
-    local now = os.time()
+    if entry.mode == 'ls1' then
+        display = string.format('[%s][LS1] %s: %s', entry.sender, entry.other_player, entry.message)
+        color = COLORS.ls1
+        push_ls_target(entry.sender, 'ls1')
+    else
+        display = string.format('[%s][LS2] %s: %s', entry.sender, entry.other_player, entry.message)
+        color = COLORS.ls2
+        push_ls_target(entry.sender, 'ls2')
+    end
 
-    if recent_ls_msgs[hash] and (now - recent_ls_msgs[hash]) < 3 then return end
+    windower.add_to_chat(color, display)
+end
 
+local function show_relayed_message(sender_char, mode, other_player, message)
     if mode == 'tell_out' then
-        recent_ls_msgs[hash] = now
-        display, color = string.format('[%s] >> %s : %s', sender_char, other_player, message), COLORS.tell
-    elseif mode == 'tell_in' then
-        recent_ls_msgs[hash] = now
-        display, color = string.format('[%s] %s >> %s', sender_char, other_player, message), COLORS.tell
-        push_reply_target(sender_char, other_player)
-    elseif settings.ls_enabled and (mode == 'ls1' or mode == 'ls2') then
-        -- Queue LS relays; hold until either the local 0x017 sets the dedup
-        -- hash (suppress) or the deadline passes with no match (show)
-        table.insert(pending_ls_relays, {
-            deadline = os.clock() + .75,
-            sender = sender_char, mode = mode,
-            other_player = other_player, message = message,
-            hash = hash
-        })
+        windower.add_to_chat(COLORS.tell, string.format('[%s] >> %s : %s', sender_char, other_player, message))
         return
     end
 
-    if display then windower.add_to_chat(color, display) end
+    if mode == 'tell_in' then
+        windower.add_to_chat(COLORS.tell, string.format('[%s] %s >> %s', sender_char, other_player, message))
+        push_reply_target(sender_char, other_player)
+        return
+    end
+
+    if not settings.ls_enabled then return end
+    if mode ~= 'ls1' and mode ~= 'ls2' then return end
+
+    local hash = ls_hash(mode, other_player, message)
+    if pending_ls[hash] then return end
+    if ls_seen_recently(hash) then return end
+
+    pending_ls[hash] = true
+    local entry = {
+        hash = hash,
+        sender = sender_char,
+        mode = mode,
+        other_player = other_player,
+        message = message,
+    }
+    coroutine.schedule(function() relay_ls(entry) end, RELAY_DELAY)
 end
 
-local function flush_pending_ls()
-    local now_clock = os.clock()
-    local now_time = os.time()
-    local i = 1
-    while i <= #pending_ls_relays do
-        local p = pending_ls_relays[i]
-        local dominated = recent_ls_msgs[p.hash] and (now_time - recent_ls_msgs[p.hash]) < 3
-
-        if dominated then
-            -- Local 0x017 already displayed this message; suppress the relay
-            table.remove(pending_ls_relays, i)
-        elseif now_clock >= p.deadline then
-            -- Deadline reached with no local hash — safe to relay
-            table.remove(pending_ls_relays, i)
-            recent_ls_msgs[p.hash] = now_time
-            local display, color
-            if p.mode == 'ls1' then
-                display = string.format('[%s][LS1] %s: %s', p.sender, p.other_player, p.message)
-                color = COLORS.ls1
-                push_ls_target(p.sender, 'ls1')
-            elseif p.mode == 'ls2' then
-                display = string.format('[%s][LS2] %s: %s', p.sender, p.other_player, p.message)
-                color = COLORS.ls2
-                push_ls_target(p.sender, 'ls2')
-            end
-            if display then windower.add_to_chat(color, display) end
-        else
-            i = i + 1
-        end
-    end
+local function open_input(text)
+    input_text = text
+    if input_scheduled then return end
+    input_scheduled = true
+    windower.send_command('keyboard_type / ')
+    coroutine.schedule(function()
+        if input_text then windower.chat.set_input(input_text) end
+        input_text = nil
+        input_scheduled = false
+    end, 0.1)
 end
 
 local function cycle_reply()
@@ -233,8 +260,7 @@ local function cycle_reply()
     reply_index = (reply_index % #online) + 1
     local entry = online[reply_index]
     local text = (entry.char == MY_NAME) and ('/tell ' .. entry.sender .. ' ') or ('//send ' .. entry.char .. ' /tell ' .. entry.sender .. ' ')
-    windower.send_command('keyboard_type / ')
-    coroutine.schedule(function() windower.chat.set_input(text) end, 0.1)
+    open_input(text)
 end
 
 local function cycle_ls_reply()
@@ -246,7 +272,6 @@ local function cycle_ls_reply()
     local ordered = {}
     local added = {}
 
-    -- Priority: specific char+LS combos where someone spoke, most recent first
     for _, target in ipairs(ls_target_list) do
         local key = target.char .. '|' .. target.mode
         if not added[key] then
@@ -260,10 +285,8 @@ local function cycle_ls_reply()
         end
     end
 
-    -- Default: current character first, then remaining online chars
     local default_order = {}
 
-    -- Current character's remaining entries
     for _, entry in ipairs(all_online) do
         if entry.char == MY_NAME then
             local key = entry.char .. '|' .. entry.mode
@@ -274,7 +297,6 @@ local function cycle_ls_reply()
         end
     end
 
-    -- Other online characters' remaining entries
     for _, entry in ipairs(all_online) do
         local key = entry.char .. '|' .. entry.mode
         if not added[key] then
@@ -283,7 +305,6 @@ local function cycle_ls_reply()
         end
     end
 
-    -- Append defaults after the activity-priority entries
     for _, entry in ipairs(default_order) do
         table.insert(ordered, entry)
     end
@@ -294,8 +315,7 @@ local function cycle_ls_reply()
     local target = ordered[ls_reply_index]
     local slash = (target.mode == 'ls1') and '/l ' or '/l2 '
     local text = (target.char == MY_NAME) and slash or ('//send ' .. target.char .. ' ' .. slash)
-    windower.send_command('keyboard_type / ')
-    coroutine.schedule(function() windower.chat.set_input(text) end, 0.1)
+    open_input(text)
 end
 
 ----------------------------------------------------------------------
@@ -308,10 +328,8 @@ windower.register_event('ipc message', function(raw)
     if not sender then return end
     sender, mode, other_player, message = unescape(sender), unescape(mode), unescape(other_player), unescape(message)
 
-    -- Ignore our own broadcasts
     if sender == MY_NAME then return end
 
-    -- Process presence
     if mode == 'login' or mode == 'heartbeat' then
         online_chars[sender] = os.time()
         if mode == 'login' and not heartbeat_reply_pending then
@@ -327,7 +345,6 @@ windower.register_event('ipc message', function(raw)
         return
     end
 
-    -- Relay actual messages
     if mode == 'tell_in' or mode == 'tell_out' or mode == 'ls1' or mode == 'ls2' then
         show_relayed_message(sender, mode, other_player, message)
     end
@@ -338,25 +355,27 @@ end)
 ----------------------------------------------------------------------
 windower.register_event('outgoing chunk', function(id, data)
     if not MY_NAME then return end
-    if id == 0x0B6 then -- Outgoing Tell
+
+    if id == 0x0B6 then
         local p = packets.parse('outgoing', data)
         local target = (p['Target Name'] or p['target_name'] or 'Unknown'):gsub('%z', ''):trim()
         local msg = (p['Message'] or p['message'] or ''):gsub('%z', ''):trim()
         reply_index = 0
         broadcast('tell_out', target, msg)
-    elseif id == 0x0B5 and settings.ls_enabled then -- Outgoing Speech (LS1/LS2/etc)
+
+    elseif id == 0x0B5 then
+        if not settings.ls_enabled then return end
+        local mode = data:byte(5)
+        if mode ~= MODE_LS1 and mode ~= MODE_LS2 then return end
+
         local p = packets.parse('outgoing', data)
-        local mode = p['Mode'] or p['mode']
         local msg = (p['Message'] or p['message'] or ''):gsub('%z', ''):trim()
-        if #msg > 0 then
-            local ls_mode = (mode == 5 and 'ls1') or (mode == 27 and 'ls2') or nil
-            if ls_mode then
-                local hash = ls_mode .. '|' .. MY_NAME .. '|' .. msg
-                push_ls_target(MY_NAME, ls_mode)
-                recent_ls_msgs[hash] = os.time()
-                broadcast(ls_mode, MY_NAME, msg)
-            end
-        end
+        if #msg == 0 then return end
+
+        local ls_mode = (mode == MODE_LS1) and 'ls1' or 'ls2'
+        push_ls_target(MY_NAME, ls_mode)
+        mark_ls_seen(ls_hash(ls_mode, MY_NAME, msg))
+        broadcast(ls_mode, MY_NAME, msg)
     end
 end)
 
@@ -364,34 +383,35 @@ end)
 -- 0x017 Incoming Chat
 ----------------------------------------------------------------------
 windower.register_event('incoming chunk', function(id, data)
-    if id == 0x017 and MY_NAME then
-        local p = packets.parse('incoming', data)
-        local mode = p['Mode'] or p['mode']
-        local sender = (p['Sender Name'] or p['sender_name'] or ''):gsub('%z', ''):trim()
-        local msg = (p['Message'] or p['message'] or ''):gsub('%z', ''):trim()
+    if id ~= 0x017 or not MY_NAME then return end
 
-        if mode == 3 then -- Tell Incoming
-            push_reply_target(MY_NAME, sender)
-            broadcast('tell_in', sender, msg)
-        elseif settings.ls_enabled and (mode == 5 or mode == 27) then
-            local ls_mode = (mode == 5) and 'ls1' or 'ls2'
-            if sender == '' or sender == 'Unknown' then sender = MY_NAME end
-            local hash = ls_mode .. '|' .. sender .. '|' .. msg
+    local mode = data:byte(5)
+    if mode ~= MODE_TELL and mode ~= MODE_LS1 and mode ~= MODE_LS2 then return end
+    if mode ~= MODE_TELL and not settings.ls_enabled then return end
 
-            push_ls_target(MY_NAME, ls_mode)
+    local p = packets.parse('incoming', data)
+    local sender = (p['Sender Name'] or p['sender_name'] or ''):gsub('%z', ''):trim()
+    local msg = (p['Message'] or p['message'] or ''):gsub('%z', ''):trim()
 
-            if sender ~= MY_NAME then
-                recent_ls_msgs[hash] = os.time()
-                broadcast(ls_mode, sender, msg)
-            else
-                if not recent_ls_msgs[hash] then
-                    recent_ls_msgs[hash] = os.time()
-                    broadcast(ls_mode, MY_NAME, msg)
-                else
-                    recent_ls_msgs[hash] = os.time()
-                end
-            end
-        end
+    if mode == MODE_TELL then
+        push_reply_target(MY_NAME, sender)
+        broadcast('tell_in', sender, msg)
+        return
+    end
+
+    local ls_mode = (mode == MODE_LS1) and 'ls1' or 'ls2'
+    if sender == '' or sender == 'Unknown' then sender = MY_NAME end
+    local hash = ls_hash(ls_mode, sender, msg)
+
+    push_ls_target(MY_NAME, ls_mode)
+
+    if sender ~= MY_NAME then
+        mark_ls_seen(hash)
+        broadcast(ls_mode, sender, msg)
+    else
+        local known = seen_ls[hash] ~= nil
+        mark_ls_seen(hash)
+        if not known then broadcast(ls_mode, MY_NAME, msg) end
     end
 end)
 
@@ -413,6 +433,8 @@ windower.register_event('addon command', function(...)
         elseif arg == 'off' then
             settings.ls_enabled = false
             settings:save()
+            seen_ls = {}
+            pending_ls = {}
             windower.add_to_chat(COLORS.info, '[Hivemind] Linkshell monitoring disabled.')
         else
             local status = settings.ls_enabled and 'enabled' or 'disabled'
@@ -428,59 +450,56 @@ windower.register_event('addon command', function(...)
 end)
 
 ----------------------------------------------------------------------
--- LOOP & INIT
+-- MAINTENANCE & INIT
 ----------------------------------------------------------------------
-local last_prune = os.time()
+local maintenance
+maintenance = function()
+    if not active then return end
 
-windower.register_event('prerender', function()
-    flush_pending_ls()
+    local now_clock = os.clock()
+    local fresh = {}
+    for hash, ts in pairs(seen_ls) do
+        if (now_clock - ts) <= SEEN_TTL then fresh[hash] = ts end
+    end
+    seen_ls = fresh
 
-    if not MY_NAME then return end
-
-    -- Periodic maintenance
-    local now = os.time()
-    if now - last_prune >= 60 then
-        last_prune = now
-        -- Prune stale dedup entries
-		local fresh = {}
-		for hash, ts in pairs(recent_ls_msgs) do
-			if (now - ts) <= 10 then fresh[hash] = ts end
-		end
-		recent_ls_msgs = fresh
+    if MY_NAME then
         prune_presence()
+        local now = os.time()
+        if now - last_heartbeat >= settings.heartbeat_interval then
+            last_heartbeat = now
+            online_chars[MY_NAME] = now
+            broadcast('heartbeat', MY_NAME, 'alive')
+        end
     end
 
-    -- Heartbeat
-    if now - last_heartbeat >= settings.heartbeat_interval then
-        last_heartbeat = now
-        online_chars[MY_NAME] = now
-        broadcast('heartbeat', MY_NAME, 'alive')
-    end
-end)
+    coroutine.schedule(maintenance, PRUNE_INTERVAL)
+end
 
 local function setup(name)
     MY_NAME = name
 
-    -- Clear stale state from any previous character session
     reply_list          = {}
     reply_index         = 0
     ls_target_list      = {}
     ls_reply_index      = 0
-    recent_ls_msgs      = {}
-    pending_ls_relays   = {}
+    seen_ls             = {}
+    pending_ls          = {}
+    input_text          = nil
+    input_scheduled     = false
 
     windower.send_command('bind ' .. settings.reply_bind .. ' hivemind reply')
     windower.send_command('bind ' .. settings.ls_bind .. ' hivemind lsreply')
 
-    -- Register self in the roster
     online_chars[MY_NAME] = os.time()
     last_heartbeat = os.time()
 
-    -- Broadcast login so other characters discover us
     broadcast('login', MY_NAME, 'online')
 end
 
 windower.register_event('load', function()
+    active = true
+    coroutine.schedule(maintenance, PRUNE_INTERVAL)
     local p = windower.ffxi.get_player()
     if p then setup(p.name) end
 end)
@@ -493,9 +512,12 @@ windower.register_event('logout', function()
         online_chars[MY_NAME] = nil
         MY_NAME = nil
     end
+    seen_ls    = {}
+    pending_ls = {}
 end)
 
 windower.register_event('unload', function()
+    active = false
     if MY_NAME then
         broadcast('logout', MY_NAME, 'offline')
         online_chars[MY_NAME] = nil
